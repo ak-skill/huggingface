@@ -1,23 +1,32 @@
 {
-  "name": "{name}",
+  "name": "huggingface",
   "version": "1.0.0",
-  "description": "{description}",
+  "description": "Helps developers interact with HuggingFace Hub for machine learning workflows. Supports authentication, model/dataset operations, inference, and fine-tuning.",
   "author": {
-    "name": "{author}"
+    "name": "Claude Agent"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/{github_org}/{name}"
+    "url": "https://github.com/claude-agent-skills/huggingface"
   },
   "license": "Apache-2.0",
   "keywords": [
     "claude-code",
     "agent-skills",
-    "skills"
+    "skills",
+    "huggingface",
+    "transformers",
+    "machine-learning",
+    "nlp",
+    "deep-learning",
+    "model-hub",
+    "inference",
+    "fine-tuning"
   ],
   "main": "SKILL.md",
   "files": [
     "SKILL.md",
+    "README.md",
     "references/",
     "scripts/",
     "assets/"
