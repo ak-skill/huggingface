@@ -1,0 +1,13 @@
+# Scripts Directory
+
+Place executable scripts here (Python, Bash, JavaScript).
+
+Scripts should:
+- Be self-contained or clearly document dependencies
+- Include helpful error messages
+- Handle edge cases gracefully
+
+Example files:
+- main.py - Primary script
+- helpers.py - Utility functions
+- test_main.py - Tests

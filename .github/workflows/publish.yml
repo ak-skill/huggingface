@@ -1,0 +1,213 @@
+name: Publish Skill
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Validate Before Publishing
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Validate skill structure
+        run: |
+          python - << 'EOF'
+          import os
+          import yaml
+          import sys
+
+          # Validate SKILL.md exists and has valid frontmatter
+          if not os.path.exists('SKILL.md'):
+              print("❌ SKILL.md not found")
+              sys.exit(1)
+
+          with open('SKILL.md', 'r') as f:
+              content = f.read()
+
+          if not content.startswith('---'):
+              print("❌ Missing YAML frontmatter")
+              sys.exit(1)
+
+          parts = content.split('---', 2)
+          if len(parts) < 3:
+              print("❌ Invalid frontmatter format")
+              sys.exit(1)
+
+          try:
+              frontmatter = yaml.safe_load(parts[1])
+              print("✅ SKILL.md is valid")
+          except yaml.YAMLError as e:
+              print(f"❌ Invalid YAML: {e}")
+              sys.exit(1)
+
+          # Validate plugin.json if it exists
+          if os.path.exists('.claude-plugin/plugin.json'):
+              import json
+              try:
+                  with open('.claude-plugin/plugin.json', 'r') as f:
+                      plugin_data = json.load(f)
+                  print("✅ plugin.json is valid")
+              except json.JSONDecodeError as e:
+                  print(f"❌ Invalid plugin.json: {e}")
+                  sys.exit(1)
+          EOF
+
+  create-release-archive:
+    name: Create Release Archive
+    needs: validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          # Remove 'v' prefix if present
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Publishing version: $VERSION"
+
+      - name: Update version in plugin.json
+        if: hashFiles('.claude-plugin/plugin.json') != ''
+        run: |
+          if [ -f .claude-plugin/plugin.json ]; then
+            # Update version in plugin.json
+            python - << 'EOF'
+          import json
+          import sys
+
+          version = "${{ steps.version.outputs.version }}"
+
+          with open('.claude-plugin/plugin.json', 'r') as f:
+              data = json.load(f)
+
+          data['version'] = version
+
+          with open('.claude-plugin/plugin.json', 'w') as f:
+              json.dump(data, f, indent=2)
+
+          print(f"Updated plugin.json version to {version}")
+          EOF
+          fi
+
+      - name: Create distribution archive
+        run: |
+          SKILL_NAME=$(grep '^name:' SKILL.md | head -1 | sed 's/name: *//')
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Create archive with skill files
+          mkdir -p dist
+
+          # Include all necessary files
+          tar -czf "dist/${SKILL_NAME}-${VERSION}.tar.gz" \
+            SKILL.md \
+            $([ -d scripts ] && echo "scripts/") \
+            $([ -d references ] && echo "references/") \
+            $([ -d assets ] && echo "assets/") \
+            $([ -d .claude-plugin ] && echo ".claude-plugin/") \
+            $([ -f README.md ] && echo "README.md") \
+            $([ -f LICENSE ] && echo "LICENSE") \
+            --exclude='*.pyc' \
+            --exclude='__pycache__' \
+            --exclude='.git*' \
+            --exclude='node_modules'
+
+          echo "Created archive: ${SKILL_NAME}-${VERSION}.tar.gz"
+          ls -lh dist/
+
+      - name: Upload release archive
+        if: github.event_name == 'release'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./dist/*.tar.gz
+          asset_name: skill-release.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload artifact
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-package
+          path: dist/*.tar.gz
+          retention-days: 30
+
+  publish-registry:
+    name: Publish to Registry
+    needs: create-release-archive
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Notify publication
+        run: |
+          echo "🎉 Skill published successfully!"
+          echo "Version: ${{ github.event.release.tag_name }}"
+          echo "Release URL: ${{ github.event.release.html_url }}"
+
+          # You can add custom registry publication logic here
+          # For example, updating a skills registry, notifying a webhook, etc.
+
+  create-git-tag:
+    name: Create Git Tag
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push tag
+        run: |
+          VERSION="${{ inputs.version }}"
+          # Add 'v' prefix if not present
+          if [[ ! "$VERSION" =~ ^v ]]; then
+            VERSION="v$VERSION"
+          fi
+
+          git tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION"
+          echo "Created and pushed tag: $VERSION"

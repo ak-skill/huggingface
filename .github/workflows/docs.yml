@@ -1,0 +1,318 @@
+name: Generate Documentation
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'SKILL.md'
+      - 'references/**'
+      - 'scripts/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  generate-docs:
+    name: Generate Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml markdown jinja2
+
+      - name: Generate README from SKILL.md
+        run: |
+          python - << 'EOF'
+          import os
+          import yaml
+          import re
+
+          def generate_readme():
+              """Generate README.md from SKILL.md."""
+              if not os.path.exists('SKILL.md'):
+                  print("SKILL.md not found, skipping")
+                  return
+
+              with open('SKILL.md', 'r') as f:
+                  content = f.read()
+
+              # Extract frontmatter
+              if content.startswith('---'):
+                  parts = content.split('---', 2)
+                  if len(parts) >= 3:
+                      frontmatter = yaml.safe_load(parts[1])
+                      markdown_body = parts[2].strip()
+                  else:
+                      frontmatter = {}
+                      markdown_body = content
+              else:
+                  frontmatter = {}
+                  markdown_body = content
+
+              # Build README
+              readme_parts = []
+
+              # Title
+              skill_name = frontmatter.get('name', 'Agent Skill')
+              readme_parts.append(f"# {skill_name}\n")
+
+              # Badges
+              readme_parts.append("[![Test Skill](../../actions/workflows/test.yml/badge.svg)](../../actions/workflows/test.yml)")
+              readme_parts.append("[![Publish Skill](../../actions/workflows/publish.yml/badge.svg)](../../actions/workflows/publish.yml)")
+              readme_parts.append("")
+
+              # Description
+              description = frontmatter.get('description', '')
+              if description:
+                  if isinstance(description, str):
+                      readme_parts.append(description + "\n")
+                  else:
+                      readme_parts.append(str(description) + "\n")
+
+              # Metadata
+              if 'metadata' in frontmatter:
+                  metadata = frontmatter['metadata']
+                  readme_parts.append("## Metadata\n")
+                  if 'author' in metadata:
+                      readme_parts.append(f"**Author:** {metadata['author']}")
+                  if 'version' in metadata:
+                      readme_parts.append(f"**Version:** {metadata['version']}")
+                  readme_parts.append("")
+
+              # License
+              if 'license' in frontmatter:
+                  readme_parts.append(f"**License:** {frontmatter['license']}\n")
+
+              # Main content
+              readme_parts.append("## Documentation\n")
+              readme_parts.append(markdown_body)
+
+              # Installation/Usage section
+              readme_parts.append("\n## Installation\n")
+              readme_parts.append("This skill is compatible with Claude Code and follows the Agent Skills open standard.\n")
+              readme_parts.append("### Using with Claude Code\n")
+              readme_parts.append("1. Clone this repository or download the skill")
+              readme_parts.append("2. Place it in your `.claude/skills/` directory")
+              readme_parts.append("3. The skill will be automatically available in Claude Code\n")
+
+              # Links
+              readme_parts.append("## Links\n")
+              readme_parts.append("- [SKILL.md](SKILL.md) - Main skill definition")
+              if os.path.exists('references'):
+                  readme_parts.append("- [references/](references/) - Technical reference documentation")
+              if os.path.exists('scripts'):
+                  readme_parts.append("- [scripts/](scripts/) - Helper scripts")
+              readme_parts.append("")
+
+              # Write README
+              readme_content = '\n'.join(readme_parts)
+
+              # Don't overwrite if README already has custom content
+              if os.path.exists('README.md'):
+                  with open('README.md', 'r') as f:
+                      existing = f.read()
+                      if 'custom content' in existing.lower() or len(existing) > len(readme_content) * 1.5:
+                          print("README.md appears to have custom content, skipping auto-generation")
+                          return
+
+              with open('README.md', 'w') as f:
+                  f.write(readme_content)
+
+              print("✅ Generated README.md")
+
+          if __name__ == '__main__':
+              generate_readme()
+          EOF
+
+      - name: Generate API documentation from scripts
+        if: hashFiles('scripts/**/*.py') != ''
+        run: |
+          python - << 'EOF'
+          import os
+          import re
+          import ast
+
+          def extract_docstrings(filepath):
+              """Extract docstrings from Python file."""
+              try:
+                  with open(filepath, 'r') as f:
+                      tree = ast.parse(f.read())
+
+                  functions = []
+                  for node in ast.walk(tree):
+                      if isinstance(node, ast.FunctionDef):
+                          docstring = ast.get_docstring(node)
+                          if docstring:
+                              # Extract function signature
+                              args = [arg.arg for arg in node.args.args]
+                              sig = f"{node.name}({', '.join(args)})"
+                              functions.append({
+                                  'name': node.name,
+                                  'signature': sig,
+                                  'docstring': docstring
+                              })
+
+                  return functions
+              except:
+                  return []
+
+          def generate_api_docs():
+              """Generate API documentation from scripts."""
+              if not os.path.exists('scripts'):
+                  return
+
+              docs = ["# API Documentation\n"]
+              docs.append("Auto-generated documentation from script files.\n")
+
+              for root, dirs, files in os.walk('scripts'):
+                  for file in files:
+                      if file.endswith('.py') and not file.startswith('test_'):
+                          filepath = os.path.join(root, file)
+                          functions = extract_docstrings(filepath)
+
+                          if functions:
+                              rel_path = os.path.relpath(filepath, 'scripts')
+                              docs.append(f"## {rel_path}\n")
+
+                              for func in functions:
+                                  docs.append(f"### `{func['signature']}`\n")
+                                  docs.append(func['docstring'] + "\n")
+
+              if len(docs) > 2:  # Has content beyond header
+                  os.makedirs('docs', exist_ok=True)
+                  with open('docs/API.md', 'w') as f:
+                      f.write('\n'.join(docs))
+                  print("✅ Generated API documentation")
+
+          if __name__ == '__main__':
+              generate_api_docs()
+          EOF
+
+      - name: Generate index page
+        run: |
+          python - << 'EOF'
+          import os
+          import yaml
+
+          def generate_index():
+              """Generate documentation index page."""
+              os.makedirs('docs', exist_ok=True)
+
+              # Read SKILL.md frontmatter
+              frontmatter = {}
+              if os.path.exists('SKILL.md'):
+                  with open('SKILL.md', 'r') as f:
+                      content = f.read()
+                      if content.startswith('---'):
+                          parts = content.split('---', 2)
+                          if len(parts) >= 3:
+                              frontmatter = yaml.safe_load(parts[1])
+
+              # Build index
+              index = []
+              index.append("# Documentation Index\n")
+
+              skill_name = frontmatter.get('name', 'Agent Skill')
+              index.append(f"Welcome to the **{skill_name}** documentation.\n")
+
+              description = frontmatter.get('description', '')
+              if description:
+                  index.append(f"{description}\n")
+
+              index.append("## Available Documentation\n")
+
+              # Link to main files
+              if os.path.exists('SKILL.md'):
+                  index.append("- [SKILL.md](../SKILL.md) - Main skill definition and instructions")
+
+              if os.path.exists('README.md'):
+                  index.append("- [README.md](../README.md) - Project overview")
+
+              if os.path.exists('references'):
+                  refs = [f for f in os.listdir('references') if f.endswith('.md')]
+                  if refs:
+                      index.append("\n### Reference Documentation\n")
+                      for ref in sorted(refs):
+                          index.append(f"- [references/{ref}](../references/{ref})")
+
+              if os.path.exists('docs/API.md'):
+                  index.append("\n### Generated Documentation\n")
+                  index.append("- [API Documentation](API.md) - Auto-generated from scripts")
+
+              index.append("\n## Quick Links\n")
+              if 'repository' in frontmatter:
+                  repo_url = frontmatter.get('repository', {}).get('url', '')
+                  if repo_url:
+                      index.append(f"- [GitHub Repository]({repo_url})")
+
+              index.append("- [Agent Skills Specification](https://github.com/anthropics/claude-code/blob/main/SKILL.md)")
+
+              with open('docs/index.md', 'w') as f:
+                  f.write('\n'.join(index))
+
+              print("✅ Generated documentation index")
+
+          if __name__ == '__main__':
+              generate_index()
+          EOF
+
+      - name: Commit generated documentation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add README.md docs/ 2>/dev/null || true
+
+          if git diff --staged --quiet; then
+            echo "No documentation changes to commit"
+          else
+            git commit -m "docs: Auto-generate documentation [skip ci]"
+            git push
+            echo "✅ Committed and pushed documentation updates"
+          fi
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: generate-docs
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Build with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./docs
+          destination: ./_site
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,196 @@
+name: Test Skill
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate Skill Structure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Validate SKILL.md structure
+        run: |
+          python - << 'EOF'
+          import os
+          import re
+          import yaml
+
+          def validate_skill():
+              """Validate SKILL.md structure and content."""
+              skill_path = 'SKILL.md'
+
+              if not os.path.exists(skill_path):
+                  print("❌ SKILL.md not found")
+                  return False
+
+              with open(skill_path, 'r') as f:
+                  content = f.read()
+
+              # Check for frontmatter
+              if not content.startswith('---'):
+                  print("❌ Missing YAML frontmatter")
+                  return False
+
+              # Extract frontmatter
+              parts = content.split('---', 2)
+              if len(parts) < 3:
+                  print("❌ Invalid frontmatter format")
+                  return False
+
+              try:
+                  frontmatter = yaml.safe_load(parts[1])
+              except yaml.YAMLError as e:
+                  print(f"❌ Invalid YAML in frontmatter: {e}")
+                  return False
+
+              # Validate required fields
+              required_fields = ['name', 'description']
+              for field in required_fields:
+                  if field not in frontmatter:
+                      print(f"❌ Missing required field: {field}")
+                      return False
+
+              # Validate name format
+              name = frontmatter['name']
+              if not re.match(r'^[a-z0-9-]+$', name):
+                  print(f"❌ Invalid name format: {name}")
+                  return False
+
+              if len(name) > 64:
+                  print(f"❌ Name too long: {len(name)} characters")
+                  return False
+
+              # Validate description
+              description = frontmatter['description']
+              if isinstance(description, str):
+                  desc_text = description
+              elif isinstance(description, dict):
+                  desc_text = str(description)
+              else:
+                  desc_text = description
+
+              if len(str(desc_text)) > 1024:
+                  print(f"❌ Description too long: {len(str(desc_text))} characters")
+                  return False
+
+              print("✅ SKILL.md validation passed")
+              return True
+
+          if __name__ == '__main__':
+              import sys
+              sys.exit(0 if validate_skill() else 1)
+          EOF
+
+      - name: Check directory structure
+        run: |
+          echo "Checking directory structure..."
+
+          # Check for expected directories
+          if [ -d "scripts" ]; then
+            echo "✅ scripts/ directory found"
+          fi
+
+          if [ -d "references" ]; then
+            echo "✅ references/ directory found"
+          fi
+
+          if [ -d "assets" ]; then
+            echo "✅ assets/ directory found"
+          fi
+
+          # Check for plugin.json if .claude-plugin exists
+          if [ -d ".claude-plugin" ]; then
+            if [ -f ".claude-plugin/plugin.json" ]; then
+              echo "✅ .claude-plugin/plugin.json found"
+            else
+              echo "⚠️  .claude-plugin directory exists but plugin.json missing"
+            fi
+          fi
+
+          echo "✅ Directory structure check complete"
+
+  test-scripts:
+    name: Test Helper Scripts
+    runs-on: ubuntu-latest
+    if: hashFiles('scripts/**/*.py') != '' || hashFiles('scripts/**/*.sh') != ''
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+        if: hashFiles('scripts/**/*.py') != ''
+
+      - name: Install Python dependencies
+        if: hashFiles('scripts/requirements.txt') != ''
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: Run Python scripts syntax check
+        if: hashFiles('scripts/**/*.py') != ''
+        run: |
+          for script in scripts/**/*.py; do
+            if [ -f "$script" ]; then
+              echo "Checking syntax: $script"
+              python -m py_compile "$script"
+            fi
+          done
+
+      - name: Run Bash scripts syntax check
+        if: hashFiles('scripts/**/*.sh') != ''
+        run: |
+          for script in scripts/**/*.sh; do
+            if [ -f "$script" ]; then
+              echo "Checking syntax: $script"
+              bash -n "$script"
+            fi
+          done
+
+      - name: Run unit tests
+        if: hashFiles('scripts/test_*.py') != '' || hashFiles('scripts/*_test.py') != ''
+        run: |
+          python -m pip install pytest
+          pytest scripts/ -v
+
+  lint:
+    name: Lint Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check Markdown files
+        uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: '**/*.md'
+          config: |
+            {
+              "default": true,
+              "MD013": false,
+              "MD033": false,
+              "MD041": false
+            }
+        continue-on-error: true
